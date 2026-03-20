@@ -1,14 +1,9 @@
 <!DOCTYPE html>
 <html lang="vi">
-
-<div style="margin-top:10px;">
-    <progress id="progressBar" value="0" max="100" style="width:300px;"></progress>
-    <span id="percent">0%</span>
-</div>
-
 <head>
 <meta charset="UTF-8">
 <title>Tool Truyện PRO</title>
+
 <style>
 body {
     font-family: Arial;
@@ -19,8 +14,12 @@ button {
     margin: 5px;
     cursor: pointer;
 }
+input {
+    padding: 8px;
+}
 </style>
 </head>
+
 <body>
 
 <h2>📚 TOOL XỬ LÝ TRUYỆN TXT</h2>
@@ -29,12 +28,22 @@ button {
 
 <button onclick="pickFolder()">📁 Chọn Folder</button>
 <button onclick="splitChapters()">✂️ Tách Chương</button>
+
+<!-- GHÉP FILE + TÊN -->
 <button onclick="mergeFiles()">📦 Ghép File</button>
+<input type="text" id="mergeName" placeholder="Tên file (vd: truyen_full)">
 
 <p id="status"></p>
 
+<!-- PROGRESS -->
+<div style="margin-top:10px;">
+    <progress id="progressBar" value="0" max="100" style="width:300px;"></progress>
+    <span id="percent">0%</span>
+</div>
+
 <script>
 let dirHandle;
+let isAndroid = !window.showDirectoryPicker;
 
 // ===== UI =====
 function setStatus(msg) {
@@ -52,51 +61,31 @@ function pad(num) {
 
 // ===== CHỌN FOLDER =====
 async function pickFolder() {
+    if (isAndroid) {
+        alert("⚠️ Android không hỗ trợ chọn folder. File sẽ tự tải về.");
+        return;
+    }
     dirHandle = await window.showDirectoryPicker();
     setStatus("✅ Đã chọn folder");
 }
 
-// ===== NHẬN DIỆN TIÊU ĐỀ CHƯƠNG (SIÊU MẠNH) =====
-function getChapterRegex() {
-    return new RegExp(
-        "(Chương\\s*\\d+[^\\n]{0,50}" +         // Chương 1, Chương 1: abc
-        "|Chuong\\s*\\d+[^\\n]{0,50}" +
-        "|Chapter\\s*\\d+[^\\n]{0,50}" +
-        "|第\\s*\\d+\\s*章[^\\n]{0,50})",
-        "gi"
-    );
-}
-
-// ===== TÁCH CHƯƠNG THEO INDEX (QUAN TRỌNG) =====
+// ===== TÁCH CHƯƠNG =====
 function splitByChapter(text) {
     const regex = /(?:^|\n)(Chương\s*\d+\s*[:：\-]?\s*[^\n]{0,50}|第\s*\d+\s*章\s*[:：\-]?\s*[^\n]{0,50})/gi;
 
     let matches = [...text.matchAll(regex)];
     let chapters = [];
 
-    if (matches.length === 0) return [];
-
     for (let i = 0; i < matches.length; i++) {
         let start = matches[i].index;
+        if (text[start] === "\n") start++;
 
-        // Fix vị trí nếu có \n phía trước
-        if (text[start] === "\n") start += 1;
-
-        let end = (i + 1 < matches.length)
-            ? matches[i + 1].index
-            : text.length;
+        let end = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
 
         let content = text.slice(start, end).trim();
 
-        // ===== BỘ LỌC CHỐNG NHẬN SAI =====
-
-        // 1. phải đủ dài (tránh ghi chú)
         if (content.length < 100) continue;
 
-        // 2. phải có xuống dòng (có body thật)
-        if (!content.includes("\n")) continue;
-
-        // 3. body phải đủ dài
         let lines = content.split("\n");
         let body = lines.slice(1).join("").trim();
 
@@ -108,8 +97,238 @@ function splitByChapter(text) {
     return chapters;
 }
 
+// ===== DOWNLOAD FILE (ANDROID) =====
+function downloadFile(name, content) {
+    const blob = new Blob([content], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+}
+
 // ===== TÁCH CHƯƠNG =====
 async function splitChapters() {
+    const file = document.getElementById("fileInput").files[0];
+    if (!file) return alert("Chọn file TXT!");
+
+    setStatus("⏳ Đang xử lý...");
+    updateProgress(0);
+
+    const text = await file.text();
+    const chapters = splitByChapter(text);
+
+    for (let i = 0; i < chapters.length; i++) {
+        let content = chapters[i];
+
+        let title = content.split("\n")[0];
+        let body = content.substring(title.length).trim();
+
+        let fileName = pad(i + 1) + ".txt";
+        let fullContent = title + "\n\n" + body;
+
+        if (isAndroid) {
+            downloadFile(fileName, fullContent);
+        } else {
+            const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(fullContent);
+            await writable.close();
+        }
+
+        updateProgress(Math.floor((i + 1) / chapters.length * 100));
+    }
+
+    setStatus("✅ Tách xong!");
+}
+
+// ===== GHÉP FILE =====
+async function mergeFiles() {
+    if (isAndroid) {
+        alert("⚠️ Android chưa hỗ trợ ghép folder. Dùng trên PC nhé!");
+        return;
+    }
+
+    if (!dirHandle) return alert("Chọn folder trước!");
+
+    setStatus("⏳ Đang ghép...");
+    updateProgress(0);
+
+    let files = [];
+
+    for await (const entry of dirHandle.values()) {
+        if (entry.kind === "file" && entry.name.endsWith(".txt")) {
+            files.push(entry);
+        }
+    }
+
+    // ===== SORT THEO SỐ =====
+    files.sort((a, b) => {
+        let numA = parseInt(a.name.match(/\d+/));
+        let numB = parseInt(b.name.match(/\d+/));
+        return numA - numB;
+    });
+
+    let merged = "";
+    let total = files.length;
+
+    for (let i = 0; i < total; i++) {
+        const file = await files[i].getFile();
+        let text = await file.text();
+
+        // ===== LÀM SẠCH =====
+        let lines = text.split("\n");
+
+        lines = lines.filter(line => {
+            let clean = line.trim();
+
+            // bỏ dòng rỗng + dòng toàn * hoặc -
+            return clean && !/^[-*]{2,}$/.test(clean);
+        });
+
+        // ===== TÁCH TITLE + BODY =====
+        let title = lines[0] || "";
+        let body = lines.slice(1).join("\n").trim();
+
+        // ===== FORMAT CHUẨN =====
+        merged += title.trim() + "\n";
+        merged += body + "\n\n\n"; // cách 2 dòng
+
+        // progress
+        updateProgress(Math.floor((i + 1) / total * 100));
+    }
+
+    // ===== TÊN FILE =====
+    let customName = document.getElementById("mergeName").value.trim();
+
+    if (!customName) {
+        customName = "FULL_TRUYEN_" + Date.now();
+    }
+
+    if (!customName.endsWith(".txt")) {
+        customName += ".txt";
+    }
+
+    const fileHandle = await dirHandle.getFileHandle(customName, { create: true });
+    const writable = await fileHandle.createWritable();
+
+    await writable.write(merged.trim());
+    await writable.close();
+
+    setStatus("✅ Ghép hoàn tất (đã format chuẩn)");
+}
+</script>
+
+</body>
+</html>
+    setStatus("⏳ Đang xử lý...");
+    updateProgress(0);
+
+    const text = await file.text();
+    const chapters = splitByChapter(text);
+
+    for (let i = 0; i < chapters.length; i++) {
+        let content = chapters[i];
+
+        let title = content.split("\n")[0];
+        let body = content.substring(title.length).trim();
+
+        let fileName = pad(i + 1) + ".txt";
+        let fullContent = title + "\n\n" + body;
+
+        if (isAndroid) {
+            downloadFile(fileName, fullContent);
+        } else {
+            const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(fullContent);
+            await writable.close();
+        }
+
+        updateProgress(Math.floor((i + 1) / chapters.length * 100));
+    }
+
+    setStatus("✅ Tách xong!");
+}
+
+// ===== GHÉP FILE =====
+async function mergeFiles() {
+    if (isAndroid) {
+        alert("⚠️ Android chưa hỗ trợ ghép folder. Dùng trên PC nhé!");
+        return;
+    }
+
+    if (!dirHandle) return alert("Chọn folder trước!");
+
+    setStatus("⏳ Đang ghép...");
+    updateProgress(0);
+
+    let files = [];
+
+    for await (const entry of dirHandle.values()) {
+        if (entry.kind === "file" && entry.name.endsWith(".txt")) {
+            files.push(entry);
+        }
+    }
+
+    // ===== SORT THEO SỐ =====
+    files.sort((a, b) => {
+        let numA = parseInt(a.name.match(/\d+/));
+        let numB = parseInt(b.name.match(/\d+/));
+        return numA - numB;
+    });
+
+    let merged = "";
+    let total = files.length;
+
+    for (let i = 0; i < total; i++) {
+        const file = await files[i].getFile();
+        let text = await file.text();
+
+        // ===== LÀM SẠCH =====
+        let lines = text.split("\n");
+
+        lines = lines.filter(line => {
+            let clean = line.trim();
+
+            // bỏ dòng rỗng + dòng toàn * hoặc -
+            return clean && !/^[-*]{2,}$/.test(clean);
+        });
+
+        // ===== TÁCH TITLE + BODY =====
+        let title = lines[0] || "";
+        let body = lines.slice(1).join("\n").trim();
+
+        // ===== FORMAT CHUẨN =====
+        merged += title.trim() + "\n";
+        merged += body + "\n\n\n"; // cách 2 dòng
+
+        // progress
+        updateProgress(Math.floor((i + 1) / total * 100));
+    }
+
+    // ===== TÊN FILE =====
+    let customName = document.getElementById("mergeName").value.trim();
+
+    if (!customName) {
+        customName = "FULL_TRUYEN_" + Date.now();
+    }
+
+    if (!customName.endsWith(".txt")) {
+        customName += ".txt";
+    }
+
+    const fileHandle = await dirHandle.getFileHandle(customName, { create: true });
+    const writable = await fileHandle.createWritable();
+
+    await writable.write(merged.trim());
+    await writable.close();
+
+    setStatus("✅ Ghép hoàn tất (đã format chuẩn)");
+}
+</script>
+
+</body>
+</html>async function splitChapters() {
     if (!dirHandle) return alert("Chọn folder trước!");
 
     const file = document.getElementById("fileInput").files[0];
